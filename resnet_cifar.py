@@ -177,6 +177,7 @@ class ResNet_Cifar(nn.Module):
             elif isinstance(m, nn.BatchNorm2d):
                 m.weight.data.fill_(1)
                 m.bias.data.zero_()
+        # print(self)
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None

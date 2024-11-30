@@ -106,7 +106,7 @@ def load_checkpoint(model, checkpoint_path, optimizer=None, get_epoch=False):
         return model
     else:
         print("LAODING OPTIMIZER")
-        return model, model_ckp["optimizer_state_dict"], model_ckp["epoch"]
+        return model, model_ckp["optimizer_state_dict"], model_ckp["epoch"] + 1
 
 
 class TrainManager(object):
@@ -308,10 +308,13 @@ if __name__ == "__main__":
     num_classes = 100 if dataset == "cifar100" else "cifar10"
     teacher_model = None
     ta_model = None
-    student_model = create_cnn_model(args.student, dataset, use_cuda=args.cuda)
+
     optimizer = None
+    student_model = create_cnn_model(args.student, dataset, use_cuda=args.cuda)
+    start_epoch = 0
+    optimizer_state_dict = None
     if args.student_checkpoint:
-        student_model, optimizer_state_dict, epoch = load_checkpoint(
+        student_model, optimizer_state_dict, start_epoch = load_checkpoint(
             student_model, args.student_checkpoint, get_epoch=True
         )
 
@@ -326,7 +329,7 @@ if __name__ == "__main__":
         "T_student": config.get("T_student"),
         "lambda_student": config.get("lambda_student"),
         "args": args,
-        "student_start_epoch": epoch,
+        "student_start_epoch": start_epoch if start_epoch else None,
     }
 
     # Train Teacher if provided a teacher, otherwise it's a normal training using only cross entropy loss
@@ -393,7 +396,7 @@ if __name__ == "__main__":
         test_loader=test_loader,
         train_config=student_train_config,
         optimizer_state_dict=optimizer_state_dict,
-        start_epoch=epoch,
+        start_epoch=start_epoch,
     )
     best_student_acc = student_trainer.train()
     nni.report_final_result(best_student_acc)
