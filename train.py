@@ -41,10 +41,19 @@ def parse_arguments():
         help="description to differentiate different methods of training the same model size",
         required=True,
     )
-    parser.add_argument("--batch-size", default=128, type=int, help="batch_size")
+    parser.add_argument("--batch-size", default=2048, type=int, help="batch_size")
     parser.add_argument(
         "--learning-rate", default=0.1, type=float, help="initial learning rate"
     )
+    # IMPORTANT NEW ARGUMENT TO DECIDE ON WHAT METHOD IS BEST
+    # PURAB TO DO. this will be transfered to the train_config of the student I think. use this to change the mode. maybe debug this if needed
+    parser.add_argument(
+        "--weighing_mode",
+        default="equal_weight",
+        type=float,
+        help="weighing mode",
+    )
+
     parser.add_argument("--momentum", default=0.9, type=float, help="SGD momentum")
     parser.add_argument(
         "--weight-decay",
@@ -138,7 +147,7 @@ class TrainManager(object):
         if optimizer_state_dict:
             print("USING GIVEN OPTIMIZER!")
             self.optimizer.load_state_dict(optimizer_state_dict)
-            
+
         self.start_epoch = start_epoch if start_epoch else 0
         if self.have_teacher:
             self.teacher.eval()
@@ -151,6 +160,80 @@ class TrainManager(object):
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.config = train_config
+
+        # assuming resnet:
+        self.teacher_layers = int(self.teacher[6:])
+        self.ta_layers = int(self.ta[6:])
+
+        if train_config.get("weighing_mode"):
+
+            if train_config["weighing_mode"] == "layer_proportional":
+                self.get_teacher_ta_weights = self.teacher_ta_layer_proportion_weight
+            # elif train_config["weighing_mode"] == "dynamic_correctness":
+            else:
+                self.get_teacher_ta_weights = self.teacher_ta_equal_weight
+        else:
+            self.get_teacher_ta_weights = self.teacher_ta_equal_weight
+
+        self.get_teacher_ta_weights()
+
+    def teacher_ta_equal_weight(
+        self,
+        hard_labels=None,
+        teacher_out=None,
+        ta_out=None,
+        student_out=None,
+        T=None,
+    ) -> tuple[int, int]:
+        return 0.5, 0.5
+
+    def teacher_ta_layer_proportion_weight(
+        self,
+        hard_labels=None,
+        teacher_out=None,
+        ta_out=None,
+        student_out=None,
+        T=None,
+    ) -> tuple[int, int]:
+        total_layers = self.ta_layers + self.teacher_layers
+
+        return self.ta_layers / total_layers, self.teacher_layers / total_layers
+
+    # NOT DONE YET
+    # def teacher_ta_dynamic_correctness_based_weight(
+    #     self,
+    #     hard_labels=None,
+    #     teacher_out=None,
+    #     ta_out=None,
+    #     student_out=None,
+    #     T=None,
+    # ) -> tuple[int, int]:
+
+    #     ce_loss = nn.CrossEntropyLoss()
+    #     ce_teacher = F.cross_entropy(teacher_out, hard_labels)
+    #     ce_ta = F.cross_entropy(ta_out, hard_labels)
+
+    #     [conf_teacher, conf_ta] = F.softmax([-ce_teacher, -ce_ta])
+
+    #     kl_teacher_ta = nn.KLDivLoss()(
+    #         F.log_softmax(teacher_out, dim=1),
+    #         ta_out,
+    #     )
+
+    #     kl_factor = F.sigmoid(kl_teacher_ta)
+
+    #     return self.ta_layers / total_layers, self.teacher_layers / total_layers
+
+    # def get_teacher_tf_weights(
+    #     self,
+    #     hard_labels=None,
+    #     teacher_out=None,
+    #     ta_out=None,
+    #     student_out=None,
+    #     T=None,
+    #     teacher_layer_cnt=None,
+    #     student_layer_cnt=None,
+    # ) -> tuple[int, int]:
 
     def train(self):
         lambda_ = self.config["lambda_student"]
@@ -179,19 +262,29 @@ class TrainManager(object):
                 if self.have_teacher:
                     teacher_outputs = self.teacher(data)
 
+                    teacher_soft = F.softmax(teacher_outputs / T, dim=1)
+
                     if self.have_ta:
                         ta_outputs = self.ta(data)
                         # Knowledge Distillation Loss
-                        teacher_soft = F.softmax(teacher_outputs / T, dim=1)
                         ta_soft = F.softmax(ta_outputs / T, dim=1)
-                        teacher_outputs = (teacher_soft + ta_soft) / 2
+
+                        w_teacher, w_ta = self.get_teacher_ta_weights(
+                            target,
+                            teacher_outputs,
+                            ta_outputs,
+                            output,
+                            T,
+                        )
+
+                        combined_outputs = teacher_soft * w_teacher + ta_soft * w_ta
 
                     else:
-                        teacher_outputs = F.softmax(teacher_outputs / T, dim=1)
+                        combined_outputs = teacher_soft
 
                     loss_KD = nn.KLDivLoss()(
                         F.log_softmax(output / T, dim=1),
-                        teacher_outputs,
+                        combined_outputs,
                     )
                     loss = (1 - lambda_) * loss_SL + lambda_ * T * T * loss_KD
 
@@ -341,7 +434,9 @@ if __name__ == "__main__":
             teacher_model = load_checkpoint(teacher_model, args.teacher_checkpoint)
         else:
             print("---------- Training Teacher -------")
-            train_loader, test_loader = get_cifar(num_classes)
+            train_loader, test_loader = get_cifar(
+                num_classes, batch_size=args.batch_size
+            )
             teacher_train_config = copy.deepcopy(train_config)
             teacher_name = "{}_{}_best.pth.tar".format(args.teacher, trial_id)
             teacher_train_config["name"] = args.teacher
@@ -366,7 +461,9 @@ if __name__ == "__main__":
             ta_model = load_checkpoint(ta_model, args.ta_checkpoint)
         else:
             print("---------- Training Teacher Assistant -------")
-            train_loader, test_loader = get_cifar(num_classes)
+            train_loader, test_loader = get_cifar(
+                num_classes, batch_size=args.batch_size
+            )
             ta_train_config = copy.deepcopy(train_config)
             ta_name = "{}_{}_best.pth.tar".format(args.ta, trial_id)
             ta_train_config["name"] = args.ta
@@ -386,7 +483,7 @@ if __name__ == "__main__":
     # Student training
     print("---------- Training Student -------")
     student_train_config = copy.deepcopy(train_config)
-    train_loader, test_loader = get_cifar(num_classes)
+    train_loader, test_loader = get_cifar(num_classes, batch_size=args.batch_size)
     student_train_config["name"] = args.student
     student_trainer = TrainManager(
         student_model,

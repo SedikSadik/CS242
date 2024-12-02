@@ -7,3 +7,4 @@ data/
 model_save_dir*
 old_saved_models/
 resnet*_indiv/
+nni_examples/*
